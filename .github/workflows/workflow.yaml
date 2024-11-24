@@ -1,0 +1,89 @@
+name: "JobSummaries"
+on: push
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DOCKER_REPO: eyalde-docker-local
+  IMAGE_NAME: swampapp
+  JF_URL: https://${{ vars.JF_URL }}/
+  JFROG_CLI_LOG_LEVEL: DEBUG
+  DOCKER_BUILD_SUMMARY: false
+  DOCKER_BUILD_RECORD_UPLOAD: false
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Setup JFrog CLI
+        uses: eyaldelarea/setup-jfrog-cli@update_header_image
+        id: setup-cli
+        env:
+          JF_URL: https://${{ vars.JF_URL }}/
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+          JFROG_CLI_LOG_LEVEL: DEBUG
+          JF_PROJECT: jobsummary
+        with:
+          download-repository: generic-local-eyal
+          version: 2.66.0
+
+      - name: Set CLI Config
+        run: jf npm-config --global=true --repo-resolve=npm-eyalde --repo-deploy=npm-eyalde
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate Docker
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.JF_URL }}
+          username: ${{ secrets.JF_USER }}
+          password: ${{ secrets.JF_PASSWORD }}
+
+      - name: Build the Docker image
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          push: true
+          context: .
+          file: docker-oci-examples/fat-manifest-example/Dockerfile.Fatmanifest
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ vars.JF_URL }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}
+          provenance: false
+
+      - name: docker scan
+
+        run: |
+          jf docker pull ${{ vars.JF_URL }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}
+          jf docker scan ${{ vars.JF_URL }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:latest --vuln --project=${{ vars.JF_PROJECT }} --fail=false --watches=Job-Summary
+      - name: add docker package to build
+        run: |
+          echo "${{ vars.JF_URL }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" > metadata.json
+          jf rt build-docker-create ${{ env.DOCKER_REPO }} --image-file metadata.json
+#      - name: Generic build
+#        run: |
+#          cd bash-example
+#          jf rt u ./deploy-file.sh generic-local-eyal/ --module=generic-module
+
+      - name: Npm curation
+        run: |
+          cd npm-example
+          jf ca
+      - name: publish build info
+        if: always()
+        run: |
+          jf rt build-collect-env
+          jf rt build-add-git
+          jf rt build-publish
+      - name: build scan
+        if : always()
+        run: |
+          jf build-scan --vuln --fail=false
